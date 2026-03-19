@@ -561,25 +561,37 @@ function ConversationView({appData,partner,coupleCode,onBack,onMarkRead}) {
   };
 
   // ── AUDIO ──
-  const startRecording=async()=>{
-    try{
-      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-      const mr=new MediaRecorder(stream,{mimeType:MediaRecorder.isTypeSupported('audio/webm')?'audio/webm':'audio/mp4'});
-      chunksRef.current=[];
-      mr.ondataavailable=e=>{if(e.data.size>0)chunksRef.current.push(e.data);};
-      mr.onstop=async()=>{
-        stream.getTracks().forEach(t=>t.stop());
-        const blob=new Blob(chunksRef.current,{type:mr.mimeType});
-        await uploadAudio(blob,mr.mimeType);
-      };
-      mr.start();
-      mediaRecRef.current=mr;
-      setRecording(true);
-    }catch(e){alert('No se pudo acceder al micrófono');}
-  };
-
-  const stopRecording=()=>{
-    if(mediaRecRef.current&&recording){mediaRecRef.current.stop();setRecording(false);}
+  const toggleRecording=async()=>{
+    if(recording){
+      // Stop and send
+      if(mediaRecRef.current) mediaRecRef.current.stop();
+      setRecording(false);
+    } else {
+      // Start recording
+      try{
+        const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+        const mimeType=MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ?'audio/webm;codecs=opus'
+          :MediaRecorder.isTypeSupported('audio/webm')
+          ?'audio/webm'
+          :'audio/mp4';
+        const mr=new MediaRecorder(stream,{mimeType});
+        chunksRef.current=[];
+        mr.ondataavailable=e=>{if(e.data&&e.data.size>0)chunksRef.current.push(e.data);};
+        mr.onstop=async()=>{
+          stream.getTracks().forEach(t=>t.stop());
+          if(chunksRef.current.length===0)return;
+          const blob=new Blob(chunksRef.current,{type:mimeType});
+          if(blob.size<1000)return; // too short, ignore
+          await uploadAudio(blob,mimeType);
+        };
+        mr.start(100); // collect data every 100ms
+        mediaRecRef.current=mr;
+        setRecording(true);
+      }catch(e){
+        alert('No se pudo acceder al micrófono. Verifica los permisos en tu navegador.');
+      }
+    }
   };
 
   const uploadAudio=async(blob,mimeType)=>{
@@ -748,26 +760,24 @@ function ConversationView({appData,partner,coupleCode,onBack,onMarkRead}) {
           <div style={{textAlign:'center',padding:'0.4rem',color:'#fbbf24',fontSize:'0.8rem',fontFamily:'DM Sans,sans-serif'}} className="pulse">Subiendo... ⏳</div>
         )}
         <div style={{display:'flex',gap:'0.4rem',alignItems:'center'}}>
-          {/* Photo button */}
+          {/* Photo button — opens camera or gallery */}
           <button onClick={()=>fileInputRef.current?.click()} disabled={uploading||recording} style={{background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:'50%',width:'40px',height:'40px',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'1.1rem',flexShrink:0,color:'rgba(200,160,200,0.8)'}}>
             📷
           </button>
-          <input ref={fileInputRef} type="file" accept="image/*" style={{display:'none'}} onChange={handlePhoto} />
+          <input ref={fileInputRef} type="file" accept="image/*" capture="environment" style={{display:'none'}} onChange={handlePhoto} />
 
-          {/* Audio button */}
+          {/* Audio button — tap to start, tap again to stop & send */}
           <button
-            onPointerDown={startRecording}
-            onPointerUp={stopRecording}
-            onPointerLeave={stopRecording}
+            onClick={toggleRecording}
             disabled={uploading}
-            style={{background:recording?'rgba(239,68,68,0.3)':'rgba(255,255,255,0.07)',border:`1px solid ${recording?'rgba(239,68,68,0.5)':'rgba(255,255,255,0.1)'}`,borderRadius:'50%',width:'40px',height:'40px',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'1.1rem',flexShrink:0,color:recording?'#f87171':'rgba(200,160,200,0.8)',transition:'all 0.15s'}}>
+            style={{background:recording?'rgba(239,68,68,0.35)':'rgba(255,255,255,0.07)',border:`1px solid ${recording?'rgba(239,68,68,0.6)':'rgba(255,255,255,0.1)'}`,borderRadius:'50%',width:'40px',height:'40px',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'1.1rem',flexShrink:0,color:recording?'#f87171':'rgba(200,160,200,0.8)',transition:'all 0.15s'}}>
             {recording?'⏹':'🎙️'}
           </button>
 
           {/* Text input */}
           <input ref={inputRef} value={input} onChange={e=>setInput(e.target.value)}
             onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}}
-            placeholder={recording?'Grabando... suelta para enviar':'Escribe algo...'}
+            placeholder={recording?'Grabando — toca ⏹ para enviar':'Escribe algo...'}
             disabled={recording}
             style={{flex:1,background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:'14px',padding:'0.75rem 1rem',color:'white',fontFamily:'DM Sans,sans-serif',fontSize:'0.9rem'}} />
 
@@ -776,7 +786,7 @@ function ConversationView({appData,partner,coupleCode,onBack,onMarkRead}) {
             ➤
           </button>
         </div>
-        {recording&&<p style={{color:'#f87171',fontSize:'0.72rem',textAlign:'center',margin:'0.4rem 0 0',fontFamily:'DM Sans,sans-serif'}}>🔴 Grabando — suelta el botón para enviar</p>}
+        {recording&&<p style={{color:'#f87171',fontSize:'0.72rem',textAlign:'center',margin:'0.4rem 0 0',fontFamily:'DM Sans,sans-serif'}}>🔴 Grabando — toca ⏹ para enviar</p>}
       </div>
     </div>
   );
