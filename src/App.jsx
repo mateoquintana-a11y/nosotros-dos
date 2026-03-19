@@ -276,16 +276,35 @@ const POSITIONS = [
 ];
 
 const LEVELS = [
-  { min:0,   max:99,   name:'Pareja Romántica',  emoji:'🌹', gradient:'linear-gradient(135deg,#a8456a,#c96b8a)' },
-  { min:100, max:299,  name:'Pareja Aventurera', emoji:'💫', gradient:'linear-gradient(135deg,#6d28d9,#8b5cf6)' },
+  { min:0,   max:124,  name:'Pareja Romántica',  emoji:'🌹', gradient:'linear-gradient(135deg,#a8456a,#c96b8a)' },
+  { min:125, max:299,  name:'Pareja Aventurera', emoji:'💫', gradient:'linear-gradient(135deg,#6d28d9,#8b5cf6)' },
   { min:300, max:599,  name:'Pareja Apasionada', emoji:'🔥', gradient:'linear-gradient(135deg,#c2500a,#e07340)' },
   { min:600, max:9999, name:'Pareja Legendaria', emoji:'✨', gradient:'linear-gradient(135deg,#a87800,#d4a017)' },
 ];
 const getLevel = pts => LEVELS.find(l=>pts>=l.min&&pts<=l.max)||LEVELS[0];
+const MEDIUM_UNLOCK = 125;
+const HOT_UNLOCK    = 190;
 const ICfg = {
   mild:   { label:'Mild',   emoji:'🌸', bg:'rgba(201,107,138,0.12)', border:'rgba(201,107,138,0.3)', accent:'#e07b8a' },
   medium: { label:'Medium', emoji:'🔥', bg:'rgba(224,115,64,0.12)',  border:'rgba(224,115,64,0.3)',  accent:'#e07340' },
   hot:    { label:'Hot',    emoji:'🌶️', bg:'rgba(220,38,38,0.12)',   border:'rgba(220,38,38,0.3)',   accent:'#ef4444' },
+};
+
+// ── Express helpers ──
+const EXPRESS_WINDOW_MS  = 24 * 60 * 60 * 1000; // 24h
+const EXPRESS_BONUS_MS   = 10 * 60 * 1000;       // 10min
+const getTimeLeft = (sentAt) => {
+  const ms = EXPRESS_WINDOW_MS - (Date.now() - new Date(sentAt).getTime());
+  return ms > 0 ? ms : 0;
+};
+const formatCountdown = (ms) => {
+  if(ms<=0) return '00:00';
+  const totalSec = Math.floor(ms/1000);
+  const h = Math.floor(totalSec/3600);
+  const m = Math.floor((totalSec%3600)/60);
+  const s = totalSec%60;
+  if(h>0) return `${h}h ${m.toString().padStart(2,'0')}m`;
+  return `${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
 };
 
 // ══════════════════════════════════════════════════════
@@ -789,7 +808,7 @@ function HomeTab({appData,partner}) {
   const matches=appData.matches||[];
   const pKey=partner==='A'?'B':'A';
   const expressChallenges=appData.expressChallenges||[];
-  const pendingForMe=expressChallenges.filter(c=>c.to===partner&&!c.completed);
+  const pendingForMe=expressChallenges.filter(c=>c.to===partner&&!c.completed&&!c.expired&&getTimeLeft(c.sentAt)>0);
   const completed=(appData.completedChallenges||[]).length+(appData.completedDates||[]).length+(appData.completedExpress||[]).length;
   const saved=(appData.savedPositions||[]).length;
   const allC=[...CHALLENGES.mild,...CHALLENGES.medium,...CHALLENGES.hot];
@@ -797,8 +816,31 @@ function HomeTab({appData,partner}) {
   const avail=allC.filter(c=>!done.includes(c.id));
   const suggested=avail[Math.floor(Date.now()/86400000)%Math.max(avail.length,1)];
 
+  // Sunday penalty
+  const isSunday=new Date().getDay()===0;
+  const myPts=pts[partner]||0;
+  const theirPts=pts[pKey]||0;
+  const isBehind=myPts<theirPts;
+  const isTied=myPts===theirPts;
+
   return(
     <div style={{padding:'1rem',display:'flex',flexDirection:'column',gap:'1rem'}}>
+      {/* Sunday card */}
+      {isSunday&&(
+        <div style={{background:isTied?'rgba(139,92,246,0.15)':isBehind?'rgba(239,68,68,0.12)':'rgba(34,197,94,0.1)',border:`1px solid ${isTied?'rgba(139,92,246,0.4)':isBehind?'rgba(239,68,68,0.35)':'rgba(34,197,94,0.3)'}`,borderRadius:'20px',padding:'1.25rem'}} className="fade-up">
+          <p style={{color:isTied?'#a78bfa':isBehind?'#f87171':'#4ade80',fontWeight:700,fontSize:'0.9rem',margin:'0 0 0.35rem'}}>
+            {isTied?'🤝 ¡Empate esta semana!':isBehind?'😏 Esta noche toca tomar la iniciativa':'🏆 ¡Van ganando esta semana!'}
+          </p>
+          <p style={{color:'rgba(220,190,220,0.8)',fontSize:'0.82rem',margin:0,lineHeight:1.4}}>
+            {isTied
+              ?`Tú ${myPts} pts · ${names[pKey]} ${theirPts} pts · Tienen que acordar cómo será la noche 😉`
+              :isBehind
+              ?`Tú ${myPts} pts · ${names[pKey]} ${theirPts} pts · La penitencia es clara: pon el ambiente esta noche 🌹`
+              :`Tú ${myPts} pts · ${names[pKey]} ${theirPts} pts · ${names[pKey]} tiene que tomar la iniciativa esta noche`
+            }
+          </p>
+        </div>
+      )}
       <div style={{background:level.gradient,borderRadius:'24px',padding:'1.25rem'}} className="fade-up">
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'0.75rem'}}>
           <div>
@@ -1014,14 +1056,31 @@ function ChallengesTab({appData,partner,updateData}) {
   const [done2,setDone2]=useState(false);
   const done=appData.completedChallenges||[];
   const total=(appData.points?.A||0)+(appData.points?.B||0);
-  const hotLocked=total<100;
+  const mediumLocked=total<MEDIUM_UNLOCK;
+  const hotLocked=total<HOT_UNLOCK;
   const complete=(c)=>{if(done.includes(c.id))return;const newDone=[...done,c.id];const newPts={...(appData.points||{A:0,B:0}),[partner]:((appData.points?.[partner])||0)+c.points};updateData({completedChallenges:newDone,points:newPts});setDone2(true);};
   if(selected){const cfg=ICfg[intensity];return(<div style={{padding:'1rem'}} className="fade-up"><button onClick={()=>{setSelected(null);setDone2(false);}} style={{background:'none',border:'none',color:'rgba(200,160,200,0.8)',cursor:'pointer',fontFamily:'DM Sans,sans-serif',fontSize:'0.9rem',padding:'0 0 1rem',display:'block'}}>← Volver</button><div style={{background:cfg.bg,border:`1px solid ${cfg.border}`,borderRadius:'24px',padding:'1.5rem',marginBottom:'1rem'}}><span style={{color:cfg.accent,fontSize:'0.75rem',fontWeight:500}}>{cfg.emoji} {cfg.label}</span><h2 className="font-display" style={{color:'white',fontSize:'1.75rem',margin:'0.3rem 0 0.75rem',lineHeight:1.2}}>{selected.title}</h2><p style={{color:'rgba(220,190,220,0.9)',lineHeight:1.6,margin:'0 0 1rem',fontSize:'0.95rem'}}>{selected.desc}</p><div style={{display:'flex',gap:'1rem'}}><span style={{color:'#e07b8a',fontSize:'0.8rem'}}>⏱ {selected.time}</span><span style={{color:'#d4a017',fontSize:'0.8rem'}}>+{selected.points} pts</span></div></div>{done.includes(selected.id)||done2?(<div style={{background:'rgba(34,197,94,0.1)',border:'1px solid rgba(34,197,94,0.3)',borderRadius:'16px',padding:'1.25rem',textAlign:'center'}}><div style={{fontSize:'2.5rem',marginBottom:'0.5rem'}}>✅</div><p style={{color:'#4ade80',fontWeight:600,margin:0}}>¡Reto completado! +{selected.points} pts</p></div>):(<button onClick={()=>complete(selected)} style={{width:'100%',background:cfg.accent,color:'white',fontFamily:'DM Sans,sans-serif',fontWeight:600,fontSize:'1rem',padding:'1rem',borderRadius:'14px',border:'none',cursor:'pointer'}}>✓ ¡Completado! (+{selected.points} pts)</button>)}</div>);}
-  return(<div style={{padding:'1rem'}}><h2 className="font-display" style={{color:'#f0e8f8',fontSize:'1.5rem',margin:'0 0 1rem'}}>Retos 🎯</h2><div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'0.5rem',marginBottom:'1rem'}}>{Object.entries(ICfg).map(([key,cfg])=>(<button key={key} onClick={()=>{if(key==='hot'&&hotLocked)return;setIntensity(key);}} style={{background:intensity===key?cfg.accent:(key==='hot'&&hotLocked?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.07)'),border:`1px solid ${intensity===key?cfg.accent:cfg.border}`,borderRadius:'14px',padding:'0.7rem 0.5rem',display:'flex',flexDirection:'column',alignItems:'center',gap:'0.3rem',cursor:key==='hot'&&hotLocked?'default':'pointer',opacity:key==='hot'&&hotLocked?0.5:1}}><span style={{fontSize:'1.2rem'}}>{cfg.emoji}</span><span style={{color:intensity===key?'white':'rgba(200,160,200,0.8)',fontSize:'0.75rem',fontWeight:500,fontFamily:'DM Sans,sans-serif'}}>{cfg.label}</span>{key==='hot'&&hotLocked&&<span style={{color:'rgba(200,160,200,0.5)',fontSize:'0.62rem'}}>🔒 100 pts</span>}</button>))}</div><div style={{display:'flex',flexDirection:'column',gap:'0.6rem'}}>{CHALLENGES[intensity].map(c=>(<button key={c.id} onClick={()=>setSelected(c)} style={{background:done.includes(c.id)?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.06)',border:`1px solid ${ICfg[intensity].border}`,borderRadius:'16px',padding:'1rem',display:'flex',alignItems:'center',justifyContent:'space-between',textAlign:'left',cursor:'pointer',opacity:done.includes(c.id)?0.6:1}}><div style={{flex:1}}><div style={{display:'flex',alignItems:'center',gap:'0.5rem'}}><span style={{color:'white',fontWeight:500,fontSize:'0.9rem',fontFamily:'DM Sans,sans-serif'}}>{c.title}</span>{done.includes(c.id)&&<span style={{color:'#4ade80',fontSize:'0.75rem'}}>✓</span>}</div><p style={{color:'rgba(200,170,200,0.7)',fontSize:'0.78rem',margin:'0.2rem 0 0',lineHeight:1.3}}>{c.desc.slice(0,65)}…</p><div style={{display:'flex',gap:'0.75rem',marginTop:'0.35rem'}}><span style={{color:'rgba(200,160,200,0.5)',fontSize:'0.72rem'}}>{c.time}</span><span style={{color:'#d4a017',fontSize:'0.72rem'}}>+{c.points} pts</span></div></div><span style={{color:'rgba(200,160,200,0.3)',marginLeft:'0.75rem',fontSize:'1.2rem'}}>›</span></button>))}</div></div>);
+  return(<div style={{padding:'1rem'}}><h2 className="font-display" style={{color:'#f0e8f8',fontSize:'1.5rem',margin:'0 0 1rem'}}>Retos 🎯</h2><div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'0.5rem',marginBottom:'1rem'}}>{Object.entries(ICfg).map(([key,cfg])=>{
+    const locked=(key==='medium'&&mediumLocked)||(key==='hot'&&hotLocked);
+    const lockPts=key==='medium'?MEDIUM_UNLOCK:HOT_UNLOCK;
+    return(<button key={key} onClick={()=>{if(locked)return;setIntensity(key);}} style={{background:intensity===key?cfg.accent:(locked?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.07)'),border:`1px solid ${intensity===key?cfg.accent:cfg.border}`,borderRadius:'14px',padding:'0.7rem 0.5rem',display:'flex',flexDirection:'column',alignItems:'center',gap:'0.3rem',cursor:locked?'default':'pointer',opacity:locked?0.5:1}}><span style={{fontSize:'1.2rem'}}>{cfg.emoji}</span><span style={{color:intensity===key?'white':'rgba(200,160,200,0.8)',fontSize:'0.75rem',fontWeight:500,fontFamily:'DM Sans,sans-serif'}}>{cfg.label}</span>{locked&&<span style={{color:'rgba(200,160,200,0.5)',fontSize:'0.62rem'}}>🔒 {lockPts} pts</span>}</button>);
+  })}</div><div style={{display:'flex',flexDirection:'column',gap:'0.6rem'}}>{CHALLENGES[intensity].map(c=>(<button key={c.id} onClick={()=>setSelected(c)} style={{background:done.includes(c.id)?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.06)',border:`1px solid ${ICfg[intensity].border}`,borderRadius:'16px',padding:'1rem',display:'flex',alignItems:'center',justifyContent:'space-between',textAlign:'left',cursor:'pointer',opacity:done.includes(c.id)?0.6:1}}><div style={{flex:1}}><div style={{display:'flex',alignItems:'center',gap:'0.5rem'}}><span style={{color:'white',fontWeight:500,fontSize:'0.9rem',fontFamily:'DM Sans,sans-serif'}}>{c.title}</span>{done.includes(c.id)&&<span style={{color:'#4ade80',fontSize:'0.75rem'}}>✓</span>}</div><p style={{color:'rgba(200,170,200,0.7)',fontSize:'0.78rem',margin:'0.2rem 0 0',lineHeight:1.3}}>{c.desc.slice(0,65)}…</p><div style={{display:'flex',gap:'0.75rem',marginTop:'0.35rem'}}><span style={{color:'rgba(200,160,200,0.5)',fontSize:'0.72rem'}}>{c.time}</span><span style={{color:'#d4a017',fontSize:'0.72rem'}}>+{c.points} pts</span></div></div><span style={{color:'rgba(200,160,200,0.3)',marginLeft:'0.75rem',fontSize:'1.2rem'}}>›</span></button>))}</div></div>);
 }
 
 // ══════════════════════════════════════════════════════
-// EXPRESS TAB (con retos entre pareja)
+// COUNTDOWN HOOK
+// ══════════════════════════════════════════════════════
+function useCountdown(sentAt) {
+  const [ms, setMs] = useState(() => getTimeLeft(sentAt));
+  useEffect(()=>{
+    const t = setInterval(()=>setMs(getTimeLeft(sentAt)), 1000);
+    return ()=>clearInterval(t);
+  },[sentAt]);
+  return ms;
+}
+
+// ══════════════════════════════════════════════════════
+// EXPRESS TAB
 // ══════════════════════════════════════════════════════
 function ExpressTab({appData,partner,updateData}) {
   const [selected,setSelected]=useState(null);
@@ -1031,10 +1090,29 @@ function ExpressTab({appData,partner,updateData}) {
   const expressChallenges=appData.expressChallenges||[];
   const pKey=partner==='A'?'B':'A';
   const names=appData.names||{A:'Ella',B:'Él'};
+  const now=Date.now();
 
-  const pendingForMe=expressChallenges.filter(c=>c.to===partner&&!c.completed);
+  // Expire challenges that passed 24h — give points to sender
+  useEffect(()=>{
+    const expired=expressChallenges.filter(c=>!c.completed&&!c.expired&&c.to===partner&&getTimeLeft(c.sentAt)===0);
+    if(expired.length===0)return;
+    const newChallenges=expressChallenges.map(c=>{
+      if(expired.find(e=>e.id===c.id)){
+        return{...c,expired:true};
+      }
+      return c;
+    });
+    // Give points to senders
+    const newPts={...(appData.points||{A:0,B:0})};
+    expired.forEach(c=>{
+      const item=EXPRESS.find(e=>e.id===c.expressId);
+      if(item) newPts[c.from]=(newPts[c.from]||0)+item.points;
+    });
+    updateData({expressChallenges:newChallenges,points:newPts});
+  },[]);
 
-  const alreadySent=(itemId)=>expressChallenges.some(c=>c.from===partner&&c.expressId===itemId&&!c.completed);
+  const pendingForMe=expressChallenges.filter(c=>c.to===partner&&!c.completed&&!c.expired&&getTimeLeft(c.sentAt)>0);
+  const alreadySentActive=(itemId)=>expressChallenges.some(c=>c.from===partner&&c.expressId===itemId&&!c.completed&&!c.expired&&getTimeLeft(c.sentAt)>0);
 
   const sendChallenge=(item)=>{
     const nc={
@@ -1044,20 +1122,21 @@ function ExpressTab({appData,partner,updateData}) {
       to:pKey,
       sentAt:new Date().toISOString(),
       completed:false,
+      expired:false,
       completedAt:null,
     };
     updateData({expressChallenges:[...expressChallenges,nc]});
   };
 
   const completeChallenge=(challenge,item)=>{
+    const elapsed=Date.now()-new Date(challenge.sentAt).getTime();
+    const isBonus=elapsed<=EXPRESS_BONUS_MS;
+    const pts=isBonus?item.points*2:item.points;
     const newChallenges=expressChallenges.map(c=>c.id===challenge.id?{...c,completed:true,completedAt:new Date().toISOString()}:c);
-    const newPts={
-      ...(appData.points||{A:0,B:0}),
-      [partner]:((appData.points?.[partner])||0)+item.points,
-      [challenge.from]:((appData.points?.[challenge.from])||0)+item.points,
-    };
+    // Only receiver gets points (with possible bonus)
+    const newPts={...(appData.points||{A:0,B:0}),[partner]:((appData.points?.[partner])||0)+pts};
     updateData({expressChallenges:newChallenges,points:newPts});
-    setCompletedChallId(challenge.id);
+    setCompletedChallId({id:challenge.id,pts,bonus:isBonus});
   };
 
   const complete=(item)=>{
@@ -1070,45 +1149,31 @@ function ExpressTab({appData,partner,updateData}) {
 
   if(selected){
     const pendingChall=pendingForMe.find(c=>c.expressId===selected.id);
-    const sent=alreadySent(selected.id);
+    const sent=alreadySentActive(selected.id);
     const isCompleted=done.includes(selected.id);
     return(
       <div style={{padding:'1rem'}} className="fade-up">
         <button onClick={()=>{setSelected(null);setDone2(false);setCompletedChallId(null);}} style={{background:'none',border:'none',color:'rgba(200,160,200,0.8)',cursor:'pointer',fontFamily:'DM Sans,sans-serif',fontSize:'0.9rem',padding:'0 0 1rem',display:'block'}}>← Volver</button>
 
-        {/* Reto recibido */}
-        {pendingChall&&(
-          <div style={{background:'rgba(234,179,8,0.1)',border:'1px solid rgba(234,179,8,0.35)',borderRadius:'16px',padding:'1rem',marginBottom:'1rem'}}>
-            <p style={{color:'#fbbf24',fontWeight:600,fontSize:'0.85rem',margin:'0 0 0.35rem'}}>💪 {names[pendingChall.from]} te retó a hacer esto</p>
-            {completedChallId===pendingChall.id?(
-              <div style={{textAlign:'center',padding:'0.5rem'}}>
-                <div style={{fontSize:'1.75rem',marginBottom:'0.25rem'}}>🎉</div>
-                <p style={{color:'#4ade80',fontWeight:600,margin:0,fontSize:'0.88rem'}}>¡Reto completado! +{selected.points} pts para los dos</p>
-              </div>
-            ):(
-              <button onClick={()=>completeChallenge(pendingChall,selected)} style={{width:'100%',background:'linear-gradient(135deg,#d97706,#f59e0b)',color:'white',fontFamily:'DM Sans,sans-serif',fontWeight:600,fontSize:'0.9rem',padding:'0.75rem',borderRadius:'12px',border:'none',cursor:'pointer'}}>
-                ✅ Completar el reto (+{selected.points} pts para los dos)
-              </button>
-            )}
-          </div>
-        )}
+        {/* Reto recibido con countdown */}
+        {pendingChall&&<ChallengeReceived challenge={pendingChall} item={selected} partner={partner} names={names} completedChallId={completedChallId} onComplete={()=>completeChallenge(pendingChall,selected)} />}
 
-        {/* Detalle del express */}
+        {/* Detalle */}
         <div style={{background:'rgba(234,179,8,0.1)',border:'1px solid rgba(234,179,8,0.3)',borderRadius:'24px',padding:'1.5rem',marginBottom:'1rem'}}>
           <span style={{color:'#fbbf24',fontSize:'0.75rem',fontWeight:500}}>⚡ Express</span>
           <h2 className="font-display" style={{color:'white',fontSize:'1.75rem',margin:'0.3rem 0 0.75rem'}}>{selected.title}</h2>
           <p style={{color:'rgba(220,190,220,0.9)',lineHeight:1.6,margin:'0 0 1rem',fontSize:'0.95rem'}}>{selected.desc}</p>
-          <div style={{display:'flex',gap:'1rem'}}>
+          <div style={{display:'flex',gap:'1rem',flexWrap:'wrap'}}>
             <span style={{color:'#fbbf24',fontSize:'0.8rem'}}>⏱ {selected.time}</span>
-            <span style={{color:'#d4a017',fontSize:'0.8rem'}}>+{selected.points} pts</span>
+            <span style={{color:'#d4a017',fontSize:'0.8rem'}}>+{selected.points} pts normales</span>
+            <span style={{color:'#4ade80',fontSize:'0.8rem'}}>+{selected.points*2} pts si completas en 10 min ⚡</span>
           </div>
         </div>
 
         {/* Acciones */}
-        <div style={{display:'flex',flexDirection:'column',gap:'0.6rem'}}>
-          {/* Completar personalmente */}
-          {!pendingChall&&(
-            isCompleted||done2?(
+        {!pendingChall&&(
+          <div style={{display:'flex',flexDirection:'column',gap:'0.6rem'}}>
+            {isCompleted||done2?(
               <div style={{background:'rgba(34,197,94,0.1)',border:'1px solid rgba(34,197,94,0.3)',borderRadius:'14px',padding:'1rem',textAlign:'center'}}>
                 <p style={{color:'#4ade80',fontWeight:600,margin:0,fontSize:'0.9rem'}}>✅ Ya lo hiciste · +{selected.points} pts</p>
               </div>
@@ -1116,22 +1181,18 @@ function ExpressTab({appData,partner,updateData}) {
               <button onClick={()=>complete(selected)} style={{width:'100%',background:'linear-gradient(135deg,#d97706,#f59e0b)',color:'white',fontFamily:'DM Sans,sans-serif',fontWeight:600,fontSize:'1rem',padding:'1rem',borderRadius:'14px',border:'none',cursor:'pointer'}}>
                 ⚡ ¡Lo hice! (+{selected.points} pts)
               </button>
-            )
-          )}
-
-          {/* Retar a pareja */}
-          {!pendingChall&&(
-            sent?(
+            )}
+            {sent?(
               <div style={{textAlign:'center',padding:'0.75rem',color:'rgba(200,160,200,0.5)',fontSize:'0.85rem',fontFamily:'DM Sans,sans-serif'}}>
-                📨 Reto enviado a {names[pKey]} · esperando que lo complete
+                📨 Reto enviado a {names[pKey]} · esperando respuesta
               </div>
             ):(
               <button onClick={()=>sendChallenge(selected)} style={{width:'100%',background:'rgba(197,110,140,0.15)',border:'1px solid rgba(197,110,140,0.35)',color:'#e07b8a',fontFamily:'DM Sans,sans-serif',fontWeight:600,fontSize:'1rem',padding:'1rem',borderRadius:'14px',cursor:'pointer'}}>
-                📨 Retar a {names[pKey]} (+{selected.points} pts c/u al completar)
+                📨 Retar a {names[pKey]} · tiene 24h para hacerlo
               </button>
-            )
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -1141,7 +1202,6 @@ function ExpressTab({appData,partner,updateData}) {
       <h2 className="font-display" style={{color:'#f0e8f8',fontSize:'1.5rem',margin:'0 0 0.25rem'}}>Express ⚡</h2>
       <p style={{color:'rgba(200,160,200,0.7)',fontSize:'0.83rem',margin:'0 0 1rem'}}>Para cuando tienen poco tiempo pero quieren provocarse</p>
 
-      {/* Retos pendientes para mí */}
       {pendingForMe.length>0&&(
         <div style={{background:'rgba(234,179,8,0.1)',border:'1px solid rgba(234,179,8,0.3)',borderRadius:'18px',padding:'1rem',marginBottom:'1rem'}}>
           <h3 style={{color:'#fbbf24',fontWeight:600,fontSize:'0.9rem',margin:'0 0 0.75rem'}}>💪 Retos para ti ({pendingForMe.length})</h3>
@@ -1149,21 +1209,12 @@ function ExpressTab({appData,partner,updateData}) {
             {pendingForMe.map(challenge=>{
               const item=EXPRESS.find(e=>e.id===challenge.expressId);
               if(!item)return null;
-              return(
-                <button key={challenge.id} onClick={()=>setSelected(item)} style={{background:'rgba(255,255,255,0.06)',border:'1px solid rgba(234,179,8,0.2)',borderRadius:'14px',padding:'0.875rem 1rem',display:'flex',alignItems:'center',justifyContent:'space-between',textAlign:'left',cursor:'pointer'}}>
-                  <div>
-                    <p style={{color:'white',fontWeight:500,fontSize:'0.88rem',margin:'0 0 0.2rem',fontFamily:'DM Sans,sans-serif'}}>{item.title}</p>
-                    <p style={{color:'rgba(200,170,200,0.6)',fontSize:'0.75rem',margin:0}}>De {names[challenge.from]} · +{item.points} pts para los dos</p>
-                  </div>
-                  <span style={{color:'#fbbf24',fontSize:'1.2rem'}}>›</span>
-                </button>
-              );
+              return<PendingChallengeRow key={challenge.id} challenge={challenge} item={item} names={names} onTap={()=>setSelected(item)} />;
             })}
           </div>
         </div>
       )}
 
-      {/* Lista de express */}
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0.65rem'}}>
         {EXPRESS.map(item=>(
           <button key={item.id} onClick={()=>setSelected(item)} style={{background:done.includes(item.id)?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.06)',border:'1px solid rgba(234,179,8,0.2)',borderRadius:'18px',padding:'1rem',textAlign:'left',cursor:'pointer',opacity:done.includes(item.id)?0.6:1}}>
@@ -1174,10 +1225,58 @@ function ExpressTab({appData,partner,updateData}) {
               <span style={{color:'#d4a017',fontSize:'0.7rem'}}>+{item.points}</span>
             </div>
             {done.includes(item.id)&&<div style={{color:'#4ade80',fontSize:'0.68rem',marginTop:'0.25rem'}}>✓ Hecho</div>}
-            {alreadySent(item.id)&&<div style={{color:'#e07b8a',fontSize:'0.68rem',marginTop:'0.25rem'}}>📨 Enviado</div>}
+            {alreadySentActive(item.id)&&<div style={{color:'#e07b8a',fontSize:'0.68rem',marginTop:'0.25rem'}}>📨 Enviado</div>}
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Pending challenge row with live countdown
+function PendingChallengeRow({challenge,item,names,onTap}) {
+  const ms=useCountdown(challenge.sentAt);
+  const isBonus=ms>=(EXPRESS_WINDOW_MS-EXPRESS_BONUS_MS);
+  return(
+    <button onClick={onTap} style={{background:'rgba(255,255,255,0.06)',border:`1px solid ${isBonus?'rgba(74,222,128,0.35)':'rgba(234,179,8,0.2)'}`,borderRadius:'14px',padding:'0.875rem 1rem',display:'flex',alignItems:'center',justifyContent:'space-between',textAlign:'left',cursor:'pointer'}}>
+      <div>
+        <p style={{color:'white',fontWeight:500,fontSize:'0.88rem',margin:'0 0 0.2rem',fontFamily:'DM Sans,sans-serif'}}>{item.title}</p>
+        <p style={{color:'rgba(200,170,200,0.6)',fontSize:'0.75rem',margin:0}}>De {names[challenge.from]} · {isBonus?`⚡ ¡Bonus x2! ${formatCountdown(ms)}`:`⏱ ${formatCountdown(ms)} restantes`}</p>
+      </div>
+      <span style={{color:isBonus?'#4ade80':'#fbbf24',fontSize:'1.2rem'}}>›</span>
+    </button>
+  );
+}
+
+// Challenge detail when received
+function ChallengeReceived({challenge,item,partner,names,completedChallId,onComplete}) {
+  const ms=useCountdown(challenge.sentAt);
+  const isBonus=ms>0&&(Date.now()-new Date(challenge.sentAt).getTime())<=EXPRESS_BONUS_MS;
+  const pKey=partner==='A'?'B':'A';
+  if(completedChallId?.id===challenge.id){
+    return(
+      <div style={{background:'rgba(34,197,94,0.1)',border:'1px solid rgba(34,197,94,0.3)',borderRadius:'16px',padding:'1.25rem',marginBottom:'1rem',textAlign:'center'}}>
+        <div style={{fontSize:'2rem',marginBottom:'0.25rem'}}>{completedChallId.bonus?'⚡🎉':'🎉'}</div>
+        <p style={{color:'#4ade80',fontWeight:600,margin:0,fontSize:'0.95rem'}}>
+          {completedChallId.bonus?`¡Bonus x2! +${completedChallId.pts} pts 🔥`:`¡Reto completado! +${completedChallId.pts} pts`}
+        </p>
+      </div>
+    );
+  }
+  return(
+    <div style={{background:isBonus?'rgba(74,222,128,0.1)':'rgba(234,179,8,0.1)',border:`1px solid ${isBonus?'rgba(74,222,128,0.35)':'rgba(234,179,8,0.35)'}`,borderRadius:'16px',padding:'1rem',marginBottom:'1rem'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
+        <p style={{color:isBonus?'#4ade80':'#fbbf24',fontWeight:600,fontSize:'0.85rem',margin:0}}>
+          💪 {names[challenge.from]} te retó
+        </p>
+        <span style={{color:isBonus?'#4ade80':'#fbbf24',fontWeight:700,fontSize:'0.9rem',fontFamily:'DM Sans,sans-serif'}}>
+          {formatCountdown(ms)}
+        </span>
+      </div>
+      {isBonus&&<p style={{color:'#4ade80',fontSize:'0.78rem',margin:'0 0 0.75rem',lineHeight:1.3}}>⚡ ¡Estás a tiempo para el doble de puntos! Complétalo ahora</p>}
+      <button onClick={onComplete} style={{width:'100%',background:isBonus?'linear-gradient(135deg,#15803d,#4ade80)':'linear-gradient(135deg,#d97706,#f59e0b)',color:'white',fontFamily:'DM Sans,sans-serif',fontWeight:600,fontSize:'0.9rem',padding:'0.75rem',borderRadius:'12px',border:'none',cursor:'pointer'}}>
+        ✅ Completar {isBonus?`(+${item.points*2} pts x2 ⚡)`:`(+${item.points} pts)`}
+      </button>
     </div>
   );
 }
@@ -1281,6 +1380,7 @@ export default function App() {
     return()=>{if(msgSubRef.current)msgSubRef.current.unsubscribe();};
   },[coupleCode,partner]);
 
+  // ── All hooks before any early returns ──
   const updateData=useCallback((updates)=>{
     setAppData(prev=>{
       const next={...prev,...updates};
@@ -1289,15 +1389,16 @@ export default function App() {
     });
   },[coupleCode]);
 
+  const markMessagesRead=useCallback(()=>{
+    if(coupleCode&&partner){ setLastRead(coupleCode,partner); setUnreadMessages(0); }
+  },[coupleCode,partner]);
+
+  // ── Early returns after all hooks ──
   if(screen==='loading')return<div style={{minHeight:'100vh',background:'#0d0a14',display:'flex',alignItems:'center',justifyContent:'center'}}><div style={{fontSize:'3rem'}} className="pulse">💑</div></div>;
   if(screen==='splash')return<SplashScreen onNext={()=>setScreen('join_or_create')} />;
   if(screen==='join_or_create')return<JoinOrCreateScreen onCreated={(data,code)=>{setAppData(data);setCoupleCode(code);setPendingCode(code);setScreen('show_code');}} onJoined={(data,code)=>{setAppData(data);setCoupleCode(code);setScreen('partner_select');}}/>;
   if(screen==='show_code')return<CodeDisplayScreen code={pendingCode} onContinue={()=>setScreen('partner_select')} />;
   if(screen==='partner_select'||!partner)return<PartnerSelectScreen names={appData?.names||{A:'Ella',B:'Él'}} onSelect={(p)=>{setPartner(p);setScreen('app');setTab('home');}}/>;
-
-  const markMessagesRead=useCallback(()=>{
-    if(coupleCode&&partner){ setLastRead(coupleCode,partner); setUnreadMessages(0); }
-  },[coupleCode,partner]);
 
   const names=appData?.names||{A:'Ella',B:'Él'};
   const expressChallenges=appData?.expressChallenges||[];
