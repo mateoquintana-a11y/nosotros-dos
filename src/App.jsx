@@ -36,6 +36,9 @@ const LOCAL_KEY = "nd_couple_code";
 const getLocalCode = () => { try { return localStorage.getItem(LOCAL_KEY); } catch { return null; } };
 const setLocalCode = (c) => { try { localStorage.setItem(LOCAL_KEY, c); } catch {} };
 
+const getLastRead = (coupleCode, partner) => { try { return localStorage.getItem(`nd_lastread_${coupleCode}_${partner}`) || '1970-01-01'; } catch { return '1970-01-01'; } };
+const setLastRead = (coupleCode, partner) => { try { localStorage.setItem(`nd_lastread_${coupleCode}_${partner}`, new Date().toISOString()); } catch {} };
+
 const dbToApp = (row) => ({
   names: row.names,
   points: row.points,
@@ -421,9 +424,55 @@ function PartnerSelectScreen({names,onSelect}) {
 }
 
 // ══════════════════════════════════════════════════════
-// CONVERSATION VIEW (nuevo)
+// AUDIO PLAYER
 // ══════════════════════════════════════════════════════
-function ConversationView({appData,partner,coupleCode,onBack}) {
+function AudioPlayer({url,isMe}) {
+  const [playing,setPlaying]=useState(false);
+  const [progress,setProgress]=useState(0);
+  const [duration,setDuration]=useState(0);
+  const audioRef=useRef(null);
+
+  useEffect(()=>{
+    const a=new Audio(url);
+    audioRef.current=a;
+    a.addEventListener('loadedmetadata',()=>setDuration(a.duration));
+    a.addEventListener('timeupdate',()=>setProgress(a.currentTime/a.duration*100));
+    a.addEventListener('ended',()=>{setPlaying(false);setProgress(0);});
+    return()=>{a.pause();a.src='';};
+  },[url]);
+
+  const toggle=()=>{
+    const a=audioRef.current;
+    if(!a)return;
+    if(playing){a.pause();setPlaying(false);}
+    else{a.play();setPlaying(true);}
+  };
+
+  const fmt=(s)=>{if(!s||isNaN(s))return'0:00';const m=Math.floor(s/60);const sec=Math.floor(s%60);return`${m}:${sec.toString().padStart(2,'0')}`;};
+
+  return(
+    <div style={{display:'flex',alignItems:'center',gap:'0.6rem',minWidth:'180px'}}>
+      <button onClick={toggle} style={{background:'rgba(255,255,255,0.15)',border:'none',borderRadius:'50%',width:'36px',height:'36px',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'1rem',flexShrink:0,color:'white'}}>
+        {playing?'⏸':'▶'}
+      </button>
+      <div style={{flex:1,display:'flex',flexDirection:'column',gap:'0.25rem'}}>
+        <div style={{background:'rgba(255,255,255,0.2)',borderRadius:'100px',height:'4px',overflow:'hidden',cursor:'pointer'}} onClick={e=>{
+          const rect=e.currentTarget.getBoundingClientRect();
+          const pct=(e.clientX-rect.left)/rect.width;
+          if(audioRef.current){audioRef.current.currentTime=pct*audioRef.current.duration;}
+        }}>
+          <div style={{background:'white',height:'100%',width:`${progress}%`,borderRadius:'100px',transition:'width 0.1s'}} />
+        </div>
+        <span style={{color:'rgba(255,255,255,0.6)',fontSize:'0.65rem'}}>{fmt(duration)}</span>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════
+// CONVERSATION VIEW
+// ══════════════════════════════════════════════════════
+function ConversationView({appData,partner,coupleCode,onBack,onMarkRead}) {
   const pKey=partner==='A'?'B':'A';
   const names=appData.names||{A:'Ella',B:'Él'};
   const [messages,setMessages]=useState([]);
@@ -431,54 +480,125 @@ function ConversationView({appData,partner,coupleCode,onBack}) {
   const [cited,setCited]=useState(null);
   const [showQs,setShowQs]=useState(false);
   const [loading,setLoading]=useState(true);
+  const [recording,setRecording]=useState(false);
+  const [uploading,setUploading]=useState(false);
+  const [viewedPhotos,setViewedPhotos]=useState({});
   const bottomRef=useRef(null);
   const inputRef=useRef(null);
+  const mediaRecRef=useRef(null);
+  const chunksRef=useRef([]);
+  const fileInputRef=useRef(null);
 
   const prefsA=appData.preferences?.A||{};
   const prefsB=appData.preferences?.B||{};
-
   const discussable=QUESTIONS.filter(q=>{
-    const a=prefsA[q.id];
-    const b=prefsB[q.id];
-    if(a===false||b===false) return false;
-    if(a===undefined&&b===undefined) return false;
+    const a=prefsA[q.id]; const b=prefsB[q.id];
+    if(a===false||b===false)return false;
+    if(a===undefined&&b===undefined)return false;
     return true;
   });
-
   const qStatus=(q)=>{
-    const a=prefsA[q.id];
-    const b=prefsB[q.id];
-    if(a===true&&b===true) return 'match';
-    if(a===true||b===true) return 'interest';
-    return 'maybe';
+    const a=prefsA[q.id]; const b=prefsB[q.id];
+    if(a===true&&b===true)return'match';
+    if(a===true||b===true)return'interest';
+    return'maybe';
   };
 
-  useEffect(()=>{
-    (async()=>{
-      const {data}=await supabase.from('messages').select('*').eq('couple_code',coupleCode).order('created_at',{ascending:true}).limit(100);
-      setMessages(data||[]);
-      setLoading(false);
-    })();
-  },[coupleCode]);
+  const loadMessages=async()=>{
+    const {data}=await supabase.from('messages').select('*').eq('couple_code',coupleCode).order('created_at',{ascending:true}).limit(100);
+    setMessages(data||[]);
+    setLoading(false);
+    setLastRead(coupleCode,partner);
+    if(onMarkRead)onMarkRead();
+  };
 
-  useEffect(()=>{
-    if(!loading) setTimeout(()=>bottomRef.current?.scrollIntoView({behavior:'smooth'}),100);
-  },[messages,loading]);
-
+  useEffect(()=>{loadMessages();},[coupleCode]);
+  useEffect(()=>{if(!loading)setTimeout(()=>bottomRef.current?.scrollIntoView({behavior:'smooth'}),100);},[messages,loading]);
   useEffect(()=>{
     const sub=supabase.channel('msgs_'+coupleCode+'_'+Date.now())
       .on('postgres_changes',{event:'INSERT',schema:'public',table:'messages',filter:'couple_code=eq.'+coupleCode},(payload)=>{
         setMessages(prev=>prev.find(m=>m.id===payload.new.id)?prev:[...prev,payload.new]);
-      }).subscribe();
+        setLastRead(coupleCode,partner);
+        if(onMarkRead)onMarkRead();
+      })
+      .on('postgres_changes',{event:'UPDATE',schema:'public',table:'messages',filter:'couple_code=eq.'+coupleCode},(payload)=>{
+        setMessages(prev=>prev.map(m=>m.id===payload.new.id?payload.new:m));
+      })
+      .subscribe();
     return()=>sub.unsubscribe();
   },[coupleCode]);
 
-  const send=async()=>{
+  const getSignedUrl=async(path)=>{
+    const {data}=await supabase.storage.from('chat-media').createSignedUrl(path,300);
+    return data?.signedUrl||null;
+  };
+
+  const send=async(extraFields={})=>{
     const text=input.trim();
-    if(!text)return;
-    const msg={couple_code:coupleCode,sender:partner,content:text,cited_question_id:cited?.id||null};
+    if(!text&&!extraFields.media_url)return;
+    const msg={couple_code:coupleCode,sender:partner,content:text||'',cited_question_id:cited?.id||null,viewed_by:[partner],...extraFields};
     setInput('');setCited(null);
     await supabase.from('messages').insert([msg]);
+  };
+
+  // ── AUDIO ──
+  const startRecording=async()=>{
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      const mr=new MediaRecorder(stream,{mimeType:MediaRecorder.isTypeSupported('audio/webm')?'audio/webm':'audio/mp4'});
+      chunksRef.current=[];
+      mr.ondataavailable=e=>{if(e.data.size>0)chunksRef.current.push(e.data);};
+      mr.onstop=async()=>{
+        stream.getTracks().forEach(t=>t.stop());
+        const blob=new Blob(chunksRef.current,{type:mr.mimeType});
+        await uploadAudio(blob,mr.mimeType);
+      };
+      mr.start();
+      mediaRecRef.current=mr;
+      setRecording(true);
+    }catch(e){alert('No se pudo acceder al micrófono');}
+  };
+
+  const stopRecording=()=>{
+    if(mediaRecRef.current&&recording){mediaRecRef.current.stop();setRecording(false);}
+  };
+
+  const uploadAudio=async(blob,mimeType)=>{
+    setUploading(true);
+    const ext=mimeType.includes('webm')?'webm':'mp4';
+    const path=`${coupleCode}/${Date.now()}_audio.${ext}`;
+    const {error}=await supabase.storage.from('chat-media').upload(path,blob,{contentType:mimeType});
+    if(!error)await send({media_url:path,media_type:'audio',content:'🎙️ Nota de voz'});
+    setUploading(false);
+  };
+
+  // ── PHOTO ──
+  const handlePhoto=async(e)=>{
+    const file=e.target.files?.[0];
+    if(!file)return;
+    setUploading(true);
+    const ext=file.name.split('.').pop()||'jpg';
+    const path=`${coupleCode}/${Date.now()}_photo.${ext}`;
+    const {error}=await supabase.storage.from('chat-media').upload(path,file,{contentType:file.type});
+    if(!error)await send({media_url:path,media_type:'photo',content:'📷 Foto (ver 1 vez)'});
+    setUploading(false);
+    e.target.value='';
+  };
+
+  const viewPhoto=async(msg)=>{
+    if(viewedPhotos[msg.id])return;
+    const url=await getSignedUrl(msg.media_url);
+    if(!url)return;
+    setViewedPhotos(prev=>({...prev,[msg.id]:url}));
+    // Mark as viewed by this partner
+    const newViewedBy=[...(msg.viewed_by||[])];
+    if(!newViewedBy.includes(partner))newViewedBy.push(partner);
+    await supabase.from('messages').update({viewed_by:newViewedBy}).eq('id',msg.id);
+    // If both have seen it, delete file from storage
+    const bothSeen=newViewedBy.includes('A')&&newViewedBy.includes('B');
+    if(bothSeen){
+      await supabase.storage.from('chat-media').remove([msg.media_url]);
+    }
   };
 
   const statusGroups=[
@@ -487,14 +607,71 @@ function ConversationView({appData,partner,coupleCode,onBack}) {
     {key:'maybe',label:'❓ Los dos dijeron quizás'},
   ];
 
+  const renderMessage=(msg,i)=>{
+    const isMe=msg.sender===partner;
+    const citedQ=msg.cited_question_id?QUESTIONS.find(q=>q.id===msg.cited_question_id):null;
+    const showName=i===0||messages[i-1]?.sender!==msg.sender;
+    const bubbleBg=isMe?'linear-gradient(135deg,#a8456a,#7c3aed)':'rgba(255,255,255,0.09)';
+    const bubbleRadius=isMe?'18px 18px 4px 18px':'18px 18px 18px 4px';
+
+    const renderContent=()=>{
+      if(msg.media_type==='audio'){
+        if(!msg.media_url)return<span style={{color:'rgba(255,255,255,0.5)',fontSize:'0.8rem'}}>Audio no disponible</span>;
+        return<AudioUrlLoader path={msg.media_url} isMe={isMe} />;
+      }
+      if(msg.media_type==='photo'){
+        const alreadyViewed=(msg.viewed_by||[]).includes(partner);
+        const localUrl=viewedPhotos[msg.id];
+        if(localUrl){
+          return(
+            <div>
+              <img src={localUrl} alt="foto" style={{maxWidth:'200px',maxHeight:'200px',borderRadius:'10px',display:'block'}} onLoad={()=>{}} />
+              <p style={{color:'rgba(255,255,255,0.5)',fontSize:'0.65rem',margin:'0.3rem 0 0'}}>Vista ✓ — desaparecerá cuando ambos la vean</p>
+            </div>
+          );
+        }
+        if(alreadyViewed&&!isMe){
+          return<span style={{color:'rgba(255,255,255,0.5)',fontSize:'0.82rem'}}>📷 Ya viste esta foto</span>;
+        }
+        if(!alreadyViewed&&!isMe){
+          return(
+            <button onClick={()=>viewPhoto(msg)} style={{background:'rgba(255,255,255,0.15)',border:'1px solid rgba(255,255,255,0.25)',borderRadius:'12px',padding:'0.75rem 1.25rem',color:'white',cursor:'pointer',fontFamily:'DM Sans,sans-serif',fontSize:'0.85rem',fontWeight:500}}>
+              👁️ Ver foto (1 vez)
+            </button>
+          );
+        }
+        // sent by me
+        const theyViewed=(msg.viewed_by||[]).includes(pKey);
+        return<span style={{color:'rgba(255,255,255,0.8)',fontSize:'0.82rem'}}>📷 Foto enviada {theyViewed?'· Vista ✓':'· Esperando...'}</span>;
+      }
+      return<span style={{fontSize:'0.9rem',lineHeight:1.4,wordBreak:'break-word'}}>{msg.content}</span>;
+    };
+
+    return(
+      <div key={msg.id} style={{display:'flex',flexDirection:'column',alignItems:isMe?'flex-end':'flex-start'}}>
+        {showName&&<p style={{color:'rgba(200,160,200,0.5)',fontSize:'0.7rem',margin:'0 0 0.25rem',padding:isMe?'0 0.25rem 0 0':'0 0 0 0.25rem'}}>{names[msg.sender]}</p>}
+        <div style={{maxWidth:'82%',display:'flex',flexDirection:'column',alignItems:isMe?'flex-end':'flex-start',gap:'0.2rem'}}>
+          {citedQ&&(
+            <div style={{background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:'10px',padding:'0.4rem 0.65rem',fontSize:'0.72rem',color:'rgba(200,160,200,0.7)',lineHeight:1.3}}>
+              💬 {citedQ.text}
+            </div>
+          )}
+          <div style={{background:bubbleBg,borderRadius:bubbleRadius,padding:'0.625rem 0.875rem',color:'white'}}>
+            {renderContent()}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return(
     <div style={{position:'fixed',inset:0,zIndex:300,background:'linear-gradient(180deg,#0d0a14,#13091f)',display:'flex',flexDirection:'column'}}>
       {/* Header */}
-      <div style={{display:'flex',alignItems:'center',gap:'0.75rem',padding:'0.875rem 1rem',borderBottom:'1px solid rgba(255,255,255,0.06)',background:'rgba(13,10,20,0.95)',flexShrink:0,paddingTop:'max(0.875rem, env(safe-area-inset-top, 0.875rem))'}}>
+      <div style={{display:'flex',alignItems:'center',gap:'0.75rem',padding:'0.875rem 1rem',borderBottom:'1px solid rgba(255,255,255,0.06)',background:'rgba(13,10,20,0.95)',flexShrink:0}}>
         <button onClick={onBack} style={{background:'none',border:'none',color:'rgba(200,160,200,0.8)',cursor:'pointer',fontSize:'1.3rem',padding:'0.25rem',display:'flex',alignItems:'center'}}>←</button>
         <div style={{flex:1}}>
           <h3 className="font-display" style={{color:'white',fontSize:'1.2rem',margin:0}}>Conversemos 💬</h3>
-          <p style={{color:'rgba(200,160,200,0.5)',fontSize:'0.7rem',margin:0}}>{discussable.length} temas · toca uno para citarlo</p>
+          <p style={{color:'rgba(200,160,200,0.5)',fontSize:'0.7rem',margin:0}}>{discussable.length} temas · fotos se ven 1 vez · audios desaparecen al verse los dos</p>
         </div>
         <button onClick={()=>setShowQs(!showQs)} style={{background:showQs?'rgba(197,110,140,0.2)':'rgba(255,255,255,0.07)',border:`1px solid ${showQs?'rgba(197,110,140,0.4)':'rgba(255,255,255,0.1)'}`,borderRadius:'100px',color:showQs?'#e07b8a':'rgba(200,160,200,0.7)',fontSize:'0.75rem',padding:'0.35rem 0.75rem',cursor:'pointer',fontFamily:'DM Sans,sans-serif'}}>
           Temas {showQs?'↑':'↓'}
@@ -503,10 +680,9 @@ function ConversationView({appData,partner,coupleCode,onBack}) {
 
       {/* Questions panel */}
       {showQs&&(
-        <div style={{background:'rgba(255,255,255,0.03)',borderBottom:'1px solid rgba(255,255,255,0.06)',padding:'0.75rem 1rem',maxHeight:'240px',overflowY:'auto',flexShrink:0}}>
-          {discussable.length===0?(
-            <p style={{color:'rgba(200,160,200,0.5)',fontSize:'0.82rem',margin:0,textAlign:'center',padding:'1rem 0'}}>Aún no hay temas para mostrar. Ambos deben responder preguntas primero.</p>
-          ):statusGroups.map(({key,label})=>{
+        <div style={{background:'rgba(255,255,255,0.03)',borderBottom:'1px solid rgba(255,255,255,0.06)',padding:'0.75rem 1rem',maxHeight:'220px',overflowY:'auto',flexShrink:0}}>
+          {discussable.length===0?(<p style={{color:'rgba(200,160,200,0.5)',fontSize:'0.82rem',margin:0,textAlign:'center',padding:'1rem 0'}}>Aún no hay temas. Ambos deben responder preguntas primero.</p>)
+          :statusGroups.map(({key,label})=>{
             const qs=discussable.filter(q=>qStatus(q)===key);
             if(qs.length===0)return null;
             return(
@@ -535,48 +711,69 @@ function ConversationView({appData,partner,coupleCode,onBack}) {
           <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',textAlign:'center',padding:'2rem'}}>
             <div style={{fontSize:'3rem',marginBottom:'0.75rem'}}>💬</div>
             <p style={{color:'rgba(200,160,200,0.7)',margin:'0 0 0.5rem',fontWeight:500,fontFamily:'DM Sans,sans-serif'}}>¡Empiecen la conversación!</p>
-            <p style={{color:'rgba(200,160,200,0.4)',fontSize:'0.82rem',margin:0}}>Toca "Temas" arriba para citar una pregunta, o escribe libremente</p>
+            <p style={{color:'rgba(200,160,200,0.4)',fontSize:'0.82rem',margin:0}}>Texto, notas de voz o fotos de un solo uso</p>
           </div>
-        ):messages.map((msg,i)=>{
-          const isMe=msg.sender===partner;
-          const citedQ=msg.cited_question_id?QUESTIONS.find(q=>q.id===msg.cited_question_id):null;
-          const showName=i===0||messages[i-1]?.sender!==msg.sender;
-          return(
-            <div key={msg.id} style={{display:'flex',flexDirection:'column',alignItems:isMe?'flex-end':'flex-start'}}>
-              {showName&&<p style={{color:'rgba(200,160,200,0.5)',fontSize:'0.7rem',margin:'0 0 0.25rem',padding:isMe?'0 0.25rem 0 0':'0 0 0 0.25rem'}}>{names[msg.sender]}</p>}
-              <div style={{maxWidth:'80%',display:'flex',flexDirection:'column',alignItems:isMe?'flex-end':'flex-start',gap:'0.2rem'}}>
-                {citedQ&&(
-                  <div style={{background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:'10px',padding:'0.4rem 0.65rem',fontSize:'0.72rem',color:'rgba(200,160,200,0.7)',lineHeight:1.3}}>
-                    💬 {citedQ.text}
-                  </div>
-                )}
-                <div style={{background:isMe?'linear-gradient(135deg,#a8456a,#7c3aed)':'rgba(255,255,255,0.09)',borderRadius:isMe?'18px 18px 4px 18px':'18px 18px 18px 4px',padding:'0.625rem 0.875rem',color:'white',fontSize:'0.9rem',lineHeight:1.4,wordBreak:'break-word',fontFamily:'DM Sans,sans-serif'}}>
-                  {msg.content}
-                </div>
-              </div>
-            </div>
-          );
-        })}
+        ):messages.map((msg,i)=>renderMessage(msg,i))}
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <div style={{padding:'0.75rem 1rem',borderTop:'1px solid rgba(255,255,255,0.06)',background:'rgba(13,10,20,0.95)',flexShrink:0,paddingBottom:'max(0.75rem, env(safe-area-inset-bottom, 0.75rem))'}}>
+      {/* Input area */}
+      <div style={{padding:'0.75rem 1rem',borderTop:'1px solid rgba(255,255,255,0.06)',background:'rgba(13,10,20,0.95)',flexShrink:0,paddingBottom:'max(0.75rem,env(safe-area-inset-bottom,0.75rem))'}}>
         {cited&&(
           <div style={{display:'flex',alignItems:'center',gap:'0.5rem',background:'rgba(197,110,140,0.1)',border:'1px solid rgba(197,110,140,0.25)',borderRadius:'10px',padding:'0.4rem 0.75rem',marginBottom:'0.5rem'}}>
             <span style={{color:'#e07b8a',fontSize:'0.72rem',flex:1,lineHeight:1.3}}>💬 {cited.text}</span>
             <button onClick={()=>setCited(null)} style={{background:'none',border:'none',color:'rgba(200,160,200,0.5)',cursor:'pointer',fontSize:'1rem',padding:0,flexShrink:0}}>✕</button>
           </div>
         )}
-        <div style={{display:'flex',gap:'0.5rem',alignItems:'center'}}>
-          <input ref={inputRef} value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}} placeholder="Escribe algo..." style={{flex:1,background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:'14px',padding:'0.75rem 1rem',color:'white',fontFamily:'DM Sans,sans-serif',fontSize:'0.9rem'}} />
-          <button onClick={send} disabled={!input.trim()} style={{background:input.trim()?'linear-gradient(135deg,#a8456a,#7c3aed)':'rgba(255,255,255,0.08)',border:'none',borderRadius:'50%',width:'44px',height:'44px',display:'flex',alignItems:'center',justifyContent:'center',cursor:input.trim()?'pointer':'default',fontSize:'1.1rem',flexShrink:0,color:'white'}}>
+        {uploading&&(
+          <div style={{textAlign:'center',padding:'0.4rem',color:'#fbbf24',fontSize:'0.8rem',fontFamily:'DM Sans,sans-serif'}} className="pulse">Subiendo... ⏳</div>
+        )}
+        <div style={{display:'flex',gap:'0.4rem',alignItems:'center'}}>
+          {/* Photo button */}
+          <button onClick={()=>fileInputRef.current?.click()} disabled={uploading||recording} style={{background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:'50%',width:'40px',height:'40px',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'1.1rem',flexShrink:0,color:'rgba(200,160,200,0.8)'}}>
+            📷
+          </button>
+          <input ref={fileInputRef} type="file" accept="image/*" style={{display:'none'}} onChange={handlePhoto} />
+
+          {/* Audio button */}
+          <button
+            onPointerDown={startRecording}
+            onPointerUp={stopRecording}
+            onPointerLeave={stopRecording}
+            disabled={uploading}
+            style={{background:recording?'rgba(239,68,68,0.3)':'rgba(255,255,255,0.07)',border:`1px solid ${recording?'rgba(239,68,68,0.5)':'rgba(255,255,255,0.1)'}`,borderRadius:'50%',width:'40px',height:'40px',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'1.1rem',flexShrink:0,color:recording?'#f87171':'rgba(200,160,200,0.8)',transition:'all 0.15s'}}>
+            {recording?'⏹':'🎙️'}
+          </button>
+
+          {/* Text input */}
+          <input ref={inputRef} value={input} onChange={e=>setInput(e.target.value)}
+            onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}}
+            placeholder={recording?'Grabando... suelta para enviar':'Escribe algo...'}
+            disabled={recording}
+            style={{flex:1,background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:'14px',padding:'0.75rem 1rem',color:'white',fontFamily:'DM Sans,sans-serif',fontSize:'0.9rem'}} />
+
+          {/* Send button */}
+          <button onClick={()=>send()} disabled={!input.trim()||recording||uploading} style={{background:(input.trim()&&!recording&&!uploading)?'linear-gradient(135deg,#a8456a,#7c3aed)':'rgba(255,255,255,0.08)',border:'none',borderRadius:'50%',width:'40px',height:'40px',display:'flex',alignItems:'center',justifyContent:'center',cursor:(input.trim()&&!recording&&!uploading)?'pointer':'default',fontSize:'1rem',flexShrink:0,color:'white'}}>
             ➤
           </button>
         </div>
+        {recording&&<p style={{color:'#f87171',fontSize:'0.72rem',textAlign:'center',margin:'0.4rem 0 0',fontFamily:'DM Sans,sans-serif'}}>🔴 Grabando — suelta el botón para enviar</p>}
       </div>
     </div>
   );
+}
+
+// Loads signed URL for audio lazily
+function AudioUrlLoader({path,isMe}) {
+  const [url,setUrl]=useState(null);
+  useEffect(()=>{
+    (async()=>{
+      const {data}=await supabase.storage.from('chat-media').createSignedUrl(path,300);
+      if(data?.signedUrl)setUrl(data.signedUrl);
+    })();
+  },[path]);
+  if(!url)return<span style={{color:'rgba(255,255,255,0.5)',fontSize:'0.8rem'}} className="pulse">Cargando audio...</span>;
+  return<AudioPlayer url={url} isMe={isMe} />;
 }
 
 // ══════════════════════════════════════════════════════
@@ -672,7 +869,7 @@ function HomeTab({appData,partner}) {
 // ══════════════════════════════════════════════════════
 // DISCOVER TAB (con chat)
 // ══════════════════════════════════════════════════════
-function DiscoverTab({appData,partner,updateData,coupleCode}) {
+function DiscoverTab({appData,partner,updateData,coupleCode,onMarkRead}) {
   const prefs=appData.preferences?.[partner]||{};
   const answered=Object.keys(prefs);
   const unanswered=QUESTIONS.filter(q=>!answered.includes(q.id));
@@ -715,7 +912,7 @@ function DiscoverTab({appData,partner,updateData,coupleCode}) {
     updateData({preferences:newPrefs,matches:newMatches});
   };
 
-  if(showChat)return<ConversationView appData={appData} partner={partner} coupleCode={coupleCode} onBack={()=>setShowChat(false)} />;
+  if(showChat)return<ConversationView appData={appData} partner={partner} coupleCode={coupleCode} onBack={()=>setShowChat(false)} onMarkRead={onMarkRead} />;
 
   if(newMatch){const q=QUESTIONS.find(q=>q.id===newMatch);return(<div style={{minHeight:'60vh',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'2rem',textAlign:'center'}}><div style={{fontSize:'4rem',marginBottom:'1rem'}} className="pop">💞</div><h2 className="font-display" style={{color:'#e07b8a',fontSize:'2rem',margin:'0 0 0.75rem'}}>¡Match!</h2><p style={{color:'rgba(240,210,240,0.9)',marginBottom:'0.5rem',fontSize:'0.9rem'}}>¡Los dos dijeron que sí a esto!</p><div style={{background:'rgba(197,110,140,0.15)',border:'1px solid rgba(197,110,140,0.3)',borderRadius:'16px',padding:'1rem',margin:'0.5rem 0 1.5rem',maxWidth:'280px'}}><p style={{color:'white',margin:0,fontSize:'0.9rem',lineHeight:1.4}}>{q?.text}</p></div><button onClick={()=>setNewMatch(null)} style={{background:'linear-gradient(135deg,#a8456a,#7c3aed)',color:'white',fontFamily:'DM Sans,sans-serif',fontWeight:600,padding:'0.875rem 2rem',borderRadius:'100px',border:'none',cursor:'pointer'}}>Continuar ✨</button></div>);}
 
@@ -1018,9 +1215,18 @@ function PositionsTab({appData,partner,updateData}) {
 // ══════════════════════════════════════════════════════
 // BOTTOM NAV + MAIN APP
 // ══════════════════════════════════════════════════════
-function BottomNav({active,onChange}) {
+function BottomNav({active,onChange,unreadMessages}) {
   const tabs=[{id:'home',emoji:'🏠',label:'Inicio'},{id:'discover',emoji:'💫',label:'Descubrir'},{id:'challenges',emoji:'🎯',label:'Retos'},{id:'express',emoji:'⚡',label:'Express'},{id:'dates',emoji:'📅',label:'Citas'},{id:'positions',emoji:'🔥',label:'Posiciones'}];
-  return(<div style={{position:'fixed',bottom:0,left:0,right:0,background:'rgba(13,10,20,0.97)',backdropFilter:'blur(12px)',borderTop:'1px solid rgba(255,255,255,0.07)',display:'grid',gridTemplateColumns:'repeat(6,1fr)',zIndex:100}}>{tabs.map(t=>(<button key={t.id} onClick={()=>onChange(t.id)} style={{padding:'0.6rem 0.25rem',display:'flex',flexDirection:'column',alignItems:'center',gap:'0.15rem',background:'none',border:'none',cursor:'pointer',position:'relative'}}><span style={{fontSize:'1.2rem',filter:active===t.id?'drop-shadow(0 0 6px rgba(224,123,138,0.6))':'none'}}>{t.emoji}</span><span style={{color:active===t.id?'#e07b8a':'rgba(150,120,160,0.6)',fontSize:'0.6rem',fontFamily:'DM Sans,sans-serif',fontWeight:active===t.id?600:400}}>{t.label}</span>{active===t.id&&<div style={{position:'absolute',bottom:0,left:'50%',transform:'translateX(-50%)',width:'4px',height:'4px',borderRadius:'50%',background:'#e07b8a'}} />}</button>))}</div>);
+  return(<div style={{position:'fixed',bottom:0,left:0,right:0,background:'rgba(13,10,20,0.97)',backdropFilter:'blur(12px)',borderTop:'1px solid rgba(255,255,255,0.07)',display:'grid',gridTemplateColumns:'repeat(6,1fr)',zIndex:100}}>{tabs.map(t=>(<button key={t.id} onClick={()=>onChange(t.id)} style={{padding:'0.6rem 0.25rem',display:'flex',flexDirection:'column',alignItems:'center',gap:'0.15rem',background:'none',border:'none',cursor:'pointer',position:'relative'}}>
+    <div style={{position:'relative',display:'inline-flex'}}>
+      <span style={{fontSize:'1.2rem',filter:active===t.id?'drop-shadow(0 0 6px rgba(224,123,138,0.6))':'none'}}>{t.emoji}</span>
+      {t.id==='discover'&&unreadMessages>0&&(
+        <span style={{position:'absolute',top:'-4px',right:'-6px',background:'#ef4444',color:'white',borderRadius:'50%',minWidth:'16px',height:'16px',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'0.58rem',fontWeight:700,lineHeight:1,padding:'0 2px'}}>{unreadMessages>9?'9+':unreadMessages}</span>
+      )}
+    </div>
+    <span style={{color:active===t.id?'#e07b8a':'rgba(150,120,160,0.6)',fontSize:'0.6rem',fontFamily:'DM Sans,sans-serif',fontWeight:active===t.id?600:400}}>{t.label}</span>
+    {active===t.id&&<div style={{position:'absolute',bottom:0,left:'50%',transform:'translateX(-50%)',width:'4px',height:'4px',borderRadius:'50%',background:'#e07b8a'}} />}
+  </button>))}</div>);
 }
 
 export default function App() {
@@ -1030,7 +1236,9 @@ export default function App() {
   const [appData,setAppData]=useState(null);
   const [coupleCode,setCoupleCode]=useState(null);
   const [pendingCode,setPendingCode]=useState(null);
+  const [unreadMessages,setUnreadMessages]=useState(0);
   const subRef=useRef(null);
+  const msgSubRef=useRef(null);
 
   useEffect(()=>{
     (async()=>{
@@ -1053,6 +1261,26 @@ export default function App() {
     return()=>{if(subRef.current)subRef.current.unsubscribe();};
   },[coupleCode]);
 
+  // Unread messages count
+  useEffect(()=>{
+    if(!coupleCode||!partner)return;
+    const checkUnread=async()=>{
+      const lastRead=getLastRead(coupleCode,partner);
+      const pKey=partner==='A'?'B':'A';
+      const {count}=await supabase.from('messages').select('*',{count:'exact',head:true})
+        .eq('couple_code',coupleCode).eq('sender',pKey).gt('created_at',lastRead);
+      setUnreadMessages(count||0);
+    };
+    checkUnread();
+    if(msgSubRef.current)msgSubRef.current.unsubscribe();
+    msgSubRef.current=supabase.channel('unread_'+coupleCode+'_'+partner)
+      .on('postgres_changes',{event:'INSERT',schema:'public',table:'messages',filter:'couple_code=eq.'+coupleCode},(payload)=>{
+        const pKey=partner==='A'?'B':'A';
+        if(payload.new.sender===pKey) setUnreadMessages(prev=>prev+1);
+      }).subscribe();
+    return()=>{if(msgSubRef.current)msgSubRef.current.unsubscribe();};
+  },[coupleCode,partner]);
+
   const updateData=useCallback((updates)=>{
     setAppData(prev=>{
       const next={...prev,...updates};
@@ -1067,13 +1295,17 @@ export default function App() {
   if(screen==='show_code')return<CodeDisplayScreen code={pendingCode} onContinue={()=>setScreen('partner_select')} />;
   if(screen==='partner_select'||!partner)return<PartnerSelectScreen names={appData?.names||{A:'Ella',B:'Él'}} onSelect={(p)=>{setPartner(p);setScreen('app');setTab('home');}}/>;
 
+  const markMessagesRead=useCallback(()=>{
+    if(coupleCode&&partner){ setLastRead(coupleCode,partner); setUnreadMessages(0); }
+  },[coupleCode,partner]);
+
   const names=appData?.names||{A:'Ella',B:'Él'};
   const expressChallenges=appData?.expressChallenges||[];
   const pendingCount=expressChallenges.filter(c=>c.to===partner&&!c.completed).length;
 
   const TABS={
     home:(p)=><HomeTab {...p} />,
-    discover:(p)=><DiscoverTab {...p} coupleCode={coupleCode} />,
+    discover:(p)=><DiscoverTab {...p} coupleCode={coupleCode} onMarkRead={markMessagesRead} />,
     challenges:(p)=><ChallengesTab {...p} />,
     express:(p)=><ExpressTab {...p} />,
     dates:(p)=><DatesTab {...p} />,
@@ -1096,7 +1328,7 @@ export default function App() {
       <div style={{paddingBottom:'80px',minHeight:'calc(100vh - 56px)',overflowY:'auto'}}>
         {TABS[tab](tabProps)}
       </div>
-      <BottomNav active={tab} onChange={setTab} />
+      <BottomNav active={tab} onChange={setTab} unreadMessages={unreadMessages} />
     </div>
   );
 }
