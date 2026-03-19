@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = "https://TU_PROYECTO.supabase.co";
-const SUPABASE_ANON_KEY = "TU_ANON_KEY";
+const SUPABASE_URL = "https://ybmcolklhlycemampkgk.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_f_IlDvXbDfGFhUh9PcWs7w_l_41b35E";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const FONT_LINK = document.createElement("link");
