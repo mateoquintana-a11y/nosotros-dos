@@ -4,7 +4,6 @@ import { createClient } from "@supabase/supabase-js";
 const SUPABASE_URL = "https://ybmcolklhlycemampkgk.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlibWNvbGtsaGx5Y2VtYW1wa2drIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4ODE4NTMsImV4cCI6MjA4OTQ1Nzg1M30.-wgV1gNB4KuzUjIvryVwzDOCX8J5n2dJ8Dur8cjbJL0";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
 const FONT_LINK = document.createElement("link");
 FONT_LINK.rel = "stylesheet";
 FONT_LINK.href = "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@300;400;500;600&display=swap";
@@ -760,7 +759,7 @@ function ConversationView({appData,partner,coupleCode,onBack,onMarkRead}) {
           <div style={{textAlign:'center',padding:'0.4rem',color:'#fbbf24',fontSize:'0.8rem',fontFamily:'DM Sans,sans-serif'}} className="pulse">Subiendo... ⏳</div>
         )}
         <div style={{display:'flex',gap:'0.4rem',alignItems:'center'}}>
-          {/* Photo button — opens camera or gallery */}
+          {/* Cámara directa */}
           <button onClick={()=>fileInputRef.current?.click()} disabled={uploading||recording} style={{background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:'50%',width:'40px',height:'40px',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'1.1rem',flexShrink:0,color:'rgba(200,160,200,0.8)'}}>
             📷
           </button>
