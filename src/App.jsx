@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 const SUPABASE_URL = "https://ybmcolklhlycemampkgk.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlibWNvbGtsaGx5Y2VtYW1wa2drIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4ODE4NTMsImV4cCI6MjA4OTQ1Nzg1M30.-wgV1gNB4KuzUjIvryVwzDOCX8J5n2dJ8Dur8cjbJL0";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 const FONT_LINK = document.createElement("link");
 FONT_LINK.rel = "stylesheet";
 FONT_LINK.href = "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@300;400;500;600&display=swap";
@@ -559,6 +560,16 @@ function ConversationView({appData,partner,coupleCode,onBack,onMarkRead}) {
     await supabase.from('messages').insert([msg]);
   };
 
+  const cancelRecording=()=>{
+    if(mediaRecRef.current&&recording){
+      // Remove onstop handler so it doesn't upload
+      mediaRecRef.current.onstop=null;
+      mediaRecRef.current.stop();
+      chunksRef.current=[];
+      setRecording(false);
+    }
+  };
+
   // ── AUDIO ──
   const toggleRecording=async()=>{
     if(recording){
@@ -773,6 +784,13 @@ function ConversationView({appData,partner,coupleCode,onBack,onMarkRead}) {
             {recording?'⏹':'🎙️'}
           </button>
 
+          {/* Cancel recording — only shows while recording */}
+          {recording&&(
+            <button onClick={cancelRecording} style={{background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:'50%',width:'40px',height:'40px',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'1rem',flexShrink:0,color:'rgba(200,160,200,0.6)'}}>
+              🗑️
+            </button>
+          )}
+
           {/* Text input */}
           <input ref={inputRef} value={input} onChange={e=>setInput(e.target.value)}
             onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}}
@@ -785,7 +803,7 @@ function ConversationView({appData,partner,coupleCode,onBack,onMarkRead}) {
             ➤
           </button>
         </div>
-        {recording&&<p style={{color:'#f87171',fontSize:'0.72rem',textAlign:'center',margin:'0.4rem 0 0',fontFamily:'DM Sans,sans-serif'}}>🔴 Grabando — toca ⏹ para enviar</p>}
+        {recording&&<p style={{color:'#f87171',fontSize:'0.72rem',textAlign:'center',margin:'0.4rem 0 0',fontFamily:'DM Sans,sans-serif'}}>🔴 Grabando — ⏹ para enviar · 🗑️ para cancelar</p>}
       </div>
     </div>
   );
